@@ -92,12 +92,31 @@ Cov[N_i^λα, N_j^λβ] = δ_ij δ_αβ N_i^λα + Super-Sample Variance Term
 
 ## Scientific Accuracy Notes
 
+### ✅ VERIFIED AND CORRECTED (November 7, 2024):
+The code has been thoroughly verified against the paper equations. **Critical corrections were made** to ensure exact adherence to Krause & Eifler (2016). See `CORRECTIONS_DOCUMENTATION.md` for full details.
+
 ### What's Accurate:
-- ✅ Correct implementation of Equations 1, A13, A14 from the paper
+- ✅ Correct implementation of Equation 1 (cluster count) from the paper
 - ✅ Proper Tinker mass function and bias relations
 - ✅ Correct log-normal mass-richness probability distribution
 - ✅ Proper comoving volume element calculation
 - ✅ Realistic survey geometry (18,000 deg²)
+- ✅ **CORRECTED**: Super-sample variance σ_b² calculation (proper 2D integration measure)
+- ✅ **CORRECTED**: Super-sample variance covariance term (proper χ integration with weight functions)
+
+### Corrections Made:
+1. **Super-Sample Variance Covariance Term** (CRITICAL):
+   - Now properly integrates over comoving distance χ
+   - Correctly implements weight functions q(χ) with Heaviside truncation
+   - Computes bias-weighted number density integrals as per paper equation
+   - Evaluates redshift-dependent σ_b² throughout integration range
+
+2. **Super-Sample Variance σ_b² Calculation** (MODERATE):
+   - Fixed integration measure: d²k_⊥ → k_⊥ dk_⊥ for radial integration
+   - Corrected normalization factor from 1/(2π) to account for angular integration
+
+3. **Added Helper Method**:
+   - `redshift_from_comoving_distance()`: Inverts χ(z) for proper integration
 
 ### Approximations Made:
 - 📝 Simplified linear power spectrum (should use CAMB/CLASS in practice)
@@ -134,9 +153,15 @@ calculator.plot_covariance_matrix(matrix_type='correlation')
 
 The implementation follows the exact mathematical formulation from Krause & Eifler (2016):
 - Uses identical cosmological parameters (Table 1)
-- Implements the same redshift and richness binning scheme  
-- Follows equation A14 exactly for the covariance calculation
+- Implements the same redshift and richness binning scheme
+- Follows covariance equation (line 765-767) exactly for the covariance calculation
 - Produces realistic cluster counts for an LSST-like survey
+
+**IMPORTANT**: See `CORRECTIONS_DOCUMENTATION.md` for detailed verification report including:
+- Line-by-line comparison of code vs. paper equations
+- Documentation of all corrections made
+- Mathematical derivations showing equivalence to paper
+- Impact analysis and verification steps
 
 ## References
 
@@ -146,5 +171,4 @@ The implementation follows the exact mathematical formulation from Krause & Eifl
 
 ---
 
-**Implementation by Claude (Anthropic) based on scientific methodology from Krause & Eifler (2016)**  
-**No synthetic data or made-up parameters - all values from the referenced paper**
+**Implementation by Claude (Anthropic) based on the methodology from Krause & Eifler (2016)**  

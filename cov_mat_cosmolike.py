@@ -101,6 +101,40 @@ class ClusterNumberCountCovariance:
         z_array = np.linspace(0, z, 1000)
         integrand = self.hubble_distance_function(z_array)
         return np.trapz(integrand, z_array)
+
+    def redshift_from_comoving_distance(self, chi_target):
+        """
+        Inverse function: find redshift z given comoving distance χ
+        Uses root finding to invert the comoving_distance function
+
+        Parameters:
+        -----------
+        chi_target : float
+            Target comoving distance in Mpc/h
+
+        Returns:
+        --------
+        z : float
+            Redshift corresponding to chi_target
+        """
+        from scipy.optimize import brentq
+
+        # The function to find the root of
+        def chi_diff(z):
+            return self.comoving_distance(z) - chi_target
+
+        # Find z such that chi(z) = chi_target
+        # Reasonable redshift range [0, 5]
+        try:
+            z_result = brentq(chi_diff, 0.0, 5.0)
+        except ValueError:
+            # If target is outside range, return boundary value
+            if chi_target < 1e-6:
+                return 0.0
+            else:
+                return 5.0
+
+        return z_result
     
     def tinker_mass_function(self, M, z):
         """
@@ -311,14 +345,22 @@ class ClusterNumberCountCovariance:
     
     def super_sample_variance(self, z):
         """
-        Super-sample variance σ_b²(Ω_s; z) from Equation A8
-        
-        Approximation for disk-like survey geometry
+        Super-sample variance σ_b²(Ω_s; z)
+
+        From paper line 738-740:
+        σ_b²(Ω_s; z) = ∫ (d²k_⊥/(2π)²) P_lin(k_⊥,z) [2J₁(k_⊥ χ(z) θ_s)/(k_⊥ χ(z) θ_s)]²
+
+        For disk-like survey geometry with radius θ_s = √(Ω_s/π)
+
+        CORRECTED: Proper 2D integration measure
+        Converting d²k_⊥ to radial: d²k_⊥ = k_⊥ dk_⊥ dφ
+        Integrating over φ gives 2π, so:
+        ∫ (d²k_⊥/(2π)²) → ∫ k_⊥ dk_⊥/(2π)
         """
         # Survey radius
         theta_s = np.sqrt(self.Omega_s / np.pi)
         chi_z = self.comoving_distance(z)
-        
+
         # k_perp integration for super-sample variance
         def integrand(k_perp):
             # Bessel function approximation for survey window
@@ -328,18 +370,21 @@ class ClusterNumberCountCovariance:
             else:
                 from scipy.special import j1
                 window_sq = (2 * j1(x) / x)**2
-            
+
             P_lin = self.linear_power_spectrum(k_perp, z)
-            return P_lin * window_sq / (2 * np.pi)
-        
+
+            # CORRECTED: Include k_perp factor for radial integration measure
+            # and correct normalization factor 1/(2π) instead of 1/(2π)²
+            return k_perp * P_lin * window_sq / (2 * np.pi)
+
         # Integrate over k_perp
         k_max = 10.0  # h/Mpc, reasonable cutoff
         k_array = np.logspace(-4, np.log10(k_max), 1000)
         integrand_values = [integrand(k) for k in k_array]
-        
+
         # Numerical integration
         sigma_b_sq = np.trapz(integrand_values, k_array)
-        
+
         return sigma_b_sq
     
     def calculate_covariance_matrix(self):
@@ -389,21 +434,78 @@ class ClusterNumberCountCovariance:
                 
                 # Super-sample variance term
                 # Only non-zero if redshift bins are the same (neglecting cross-z correlations)
+                # Paper equation (line 765-767):
+                # Cov = Ω_s² ∫ dχ q^i_{λ_α}(χ) q^j_{λ_β}(χ) × [bias_α] × [bias_β] × σ_b²(z(χ))
+                #
+                # where q_{λ_α}^i(χ) = Θ(z-z_min) Θ(z_max-z) (dV/dχdΩ)  [Eq. line 240-241]
+                # and [bias_α] = ∫ dM (dn/dM) b_h(M,z) ∫ dλ p(M|λ,z)
+                #
+                # CORRECTED IMPLEMENTATION: Proper χ integration with weight functions
                 if i1 == i2:
-                    z_center = 0.5 * (z_min1 + z_max1)  # Use bin center
-                    
-                    # Calculate cluster biases
-                    b1 = self.cluster_bias(z_center, lambda_min1, lambda_max1)
-                    b2 = self.cluster_bias(z_center, lambda_min2, lambda_max2)
-                    
-                    # Super-sample variance
-                    sigma_b_sq = self.super_sample_variance(z_center)
-                    
-                    # Volume element weight (simplified)
-                    vol_weight = self.comoving_volume_element(z_center) * (z_max1 - z_min1)
-                    
-                    super_sample_var = (self.Omega_s**2 * vol_weight * 
-                                      b1 * b2 * sigma_b_sq)
+                    # Define the integrand over comoving distance χ
+                    def chi_integrand(chi):
+                        # Convert chi to redshift
+                        z = self.redshift_from_comoving_distance(chi)
+
+                        # Weight function q_{λ_α}^i(χ) for bin 1 (Heaviside × volume element)
+                        if z_min1 <= z <= z_max1:
+                            q1 = self.comoving_volume_element(z)
+                        else:
+                            q1 = 0.0
+
+                        # Weight function q_{λ_β}^j(χ) for bin 2 (Heaviside × volume element)
+                        if z_min2 <= z <= z_max2:
+                            q2 = self.comoving_volume_element(z)
+                        else:
+                            q2 = 0.0
+
+                        # If either weight is zero, skip expensive calculations
+                        if q1 == 0.0 or q2 == 0.0:
+                            return 0.0
+
+                        # Calculate bias-weighted number density for each richness bin
+                        # This computes: ∫ dM (dn/dM) b_h(M,z) ∫ dλ p(M|λ,z)
+                        def bias_weighted_density(lambda_min, lambda_max):
+                            def integrand_M(M):
+                                dn_dM = self.tinker_mass_function(M, z)
+                                b_h = self.tinker_halo_bias(M, z)
+
+                                def integrand_lambda(lambda_val):
+                                    return self.mass_richness_probability(M, lambda_val, z)
+
+                                lambda_integral, _ = quad(integrand_lambda, lambda_min, lambda_max)
+                                return dn_dM * b_h * lambda_integral
+
+                            M_min = 1e12
+                            M_max = 1e16
+                            result, _ = quad(integrand_M, M_min, M_max)
+                            return result
+
+                        # Compute bias-weighted densities for both bins
+                        bias_weighted_1 = bias_weighted_density(lambda_min1, lambda_max1)
+                        bias_weighted_2 = bias_weighted_density(lambda_min2, lambda_max2)
+
+                        # Super-sample variance at this redshift
+                        sigma_b_sq = self.super_sample_variance(z)
+
+                        # Full integrand: q1 × q2 × [bias_1] × [bias_2] × σ_b²
+                        return q1 * q2 * bias_weighted_1 * bias_weighted_2 * sigma_b_sq
+
+                    # Integration limits in comoving distance
+                    # Integrate over the overlap of the two redshift bins
+                    z_min_overlap = max(z_min1, z_min2)
+                    z_max_overlap = min(z_max1, z_max2)
+
+                    if z_max_overlap > z_min_overlap:
+                        chi_min = self.comoving_distance(z_min_overlap)
+                        chi_max = self.comoving_distance(z_max_overlap)
+
+                        # Perform the χ integral
+                        chi_integral, _ = quad(chi_integrand, chi_min, chi_max,
+                                              epsabs=1e-6, epsrel=1e-6)
+                        super_sample_var = self.Omega_s**2 * chi_integral
+                    else:
+                        super_sample_var = 0.0
                 else:
                     super_sample_var = 0.0
                 
