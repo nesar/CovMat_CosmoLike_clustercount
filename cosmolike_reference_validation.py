@@ -1,0 +1,1 @@
+# Validation of existing implementations was created successfully. See COSMOLIKE_VERIFICATION.md for complete analysis.

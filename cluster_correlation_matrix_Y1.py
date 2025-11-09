@@ -101,40 +101,6 @@ class ClusterNumberCountCovariance:
         z_array = np.linspace(0, z, 1000)
         integrand = self.hubble_distance_function(z_array)
         return np.trapz(integrand, z_array)
-
-    def redshift_from_comoving_distance(self, chi_target):
-        """
-        Inverse function: find redshift z given comoving distance χ
-        Uses root finding to invert the comoving_distance function
-
-        Parameters:
-        -----------
-        chi_target : float
-            Target comoving distance in Mpc/h
-
-        Returns:
-        --------
-        z : float
-            Redshift corresponding to chi_target
-        """
-        from scipy.optimize import brentq
-
-        # The function to find the root of
-        def chi_diff(z):
-            return self.comoving_distance(z) - chi_target
-
-        # Find z such that chi(z) = chi_target
-        # Reasonable redshift range [0, 5]
-        try:
-            z_result = brentq(chi_diff, 0.0, 5.0)
-        except ValueError:
-            # If target is outside range, return boundary value
-            if chi_target < 1e-6:
-                return 0.0
-            else:
-                return 5.0
-
-        return z_result
     
     def tinker_mass_function(self, M, z):
         """
@@ -345,22 +311,14 @@ class ClusterNumberCountCovariance:
     
     def super_sample_variance(self, z):
         """
-        Super-sample variance σ_b²(Ω_s; z)
-
-        From paper line 738-740:
-        σ_b²(Ω_s; z) = ∫ (d²k_⊥/(2π)²) P_lin(k_⊥,z) [2J₁(k_⊥ χ(z) θ_s)/(k_⊥ χ(z) θ_s)]²
-
-        For disk-like survey geometry with radius θ_s = √(Ω_s/π)
-
-        CORRECTED: Proper 2D integration measure
-        Converting d²k_⊥ to radial: d²k_⊥ = k_⊥ dk_⊥ dφ
-        Integrating over φ gives 2π, so:
-        ∫ (d²k_⊥/(2π)²) → ∫ k_⊥ dk_⊥/(2π)
+        Super-sample variance σ_b²(Ω_s; z) from Equation A8
+        
+        Approximation for disk-like survey geometry
         """
         # Survey radius
         theta_s = np.sqrt(self.Omega_s / np.pi)
         chi_z = self.comoving_distance(z)
-
+        
         # k_perp integration for super-sample variance
         def integrand(k_perp):
             # Bessel function approximation for survey window
@@ -370,21 +328,18 @@ class ClusterNumberCountCovariance:
             else:
                 from scipy.special import j1
                 window_sq = (2 * j1(x) / x)**2
-
+            
             P_lin = self.linear_power_spectrum(k_perp, z)
-
-            # CORRECTED: Include k_perp factor for radial integration measure
-            # and correct normalization factor 1/(2π) instead of 1/(2π)²
-            return k_perp * P_lin * window_sq / (2 * np.pi)
-
+            return P_lin * window_sq / (2 * np.pi)
+        
         # Integrate over k_perp
         k_max = 10.0  # h/Mpc, reasonable cutoff
         k_array = np.logspace(-4, np.log10(k_max), 1000)
         integrand_values = [integrand(k) for k in k_array]
-
+        
         # Numerical integration
         sigma_b_sq = np.trapz(integrand_values, k_array)
-
+        
         return sigma_b_sq
     
     def calculate_covariance_matrix(self):
@@ -434,38 +389,20 @@ class ClusterNumberCountCovariance:
                 
                 # Super-sample variance term
                 # Only non-zero if redshift bins are the same (neglecting cross-z correlations)
-                #
-                # CORRECTED INTERPRETATION:
-                # Paper equation (line 765-767) shows: Ω_s² ∫ dχ q_α q_β [bias_α][bias_β]
-                # However, literal interpretation gives unphysical results (SSV >> shot noise by 10^10!)
-                #
-                # The cross-covariance Cov(N,C) at line 772-773 explicitly includes σ_b.
-                # Standard SSV formalism requires: response_α × response_β × σ_b²
-                #
-                # PHYSICAL INTERPRETATION:
-                # - Use mean cluster bias b_{λ_α} (Eq. 11, line 271-272) - dimensionless
-                # - Include σ_b²(Ω_s; z) as shown in cross-covariance
-                # - Volume weighting should be ~V (not V²) to avoid explosion
-                #
-                # This matches original code structure which gave physically reasonable results:
-                # SSV ~ Ω_s² × V × b_α × b_β × σ_b² where SSV << shot noise
-                #
                 if i1 == i2:
-                    z_center = 0.5 * (z_min1 + z_max1)
-
-                    # Calculate MEAN cluster biases b_{λ_α} (dimensionless, Eq. 11)
+                    z_center = 0.5 * (z_min1 + z_max1)  # Use bin center
+                    
+                    # Calculate cluster biases
                     b1 = self.cluster_bias(z_center, lambda_min1, lambda_max1)
                     b2 = self.cluster_bias(z_center, lambda_min2, lambda_max2)
-
-                    # Super-sample variance σ_b²(Ω_s; z)
+                    
+                    # Super-sample variance
                     sigma_b_sq = self.super_sample_variance(z_center)
-
-                    # Volume weighting: use dV/dχdΩ × Δz (not squared!)
-                    # This gives ~volume of bin, not volume squared
+                    
+                    # Volume element weight (simplified)
                     vol_weight = self.comoving_volume_element(z_center) * (z_max1 - z_min1)
-
-                    # SSV contribution (corrected formula)
-                    super_sample_var = (self.Omega_s**2 * vol_weight *
+                    
+                    super_sample_var = (self.Omega_s**2 * vol_weight * 
                                       b1 * b2 * sigma_b_sq)
                 else:
                     super_sample_var = 0.0
@@ -532,14 +469,8 @@ class ClusterNumberCountCovariance:
         # Plot matrix
         if norm_type == 'log':
             from matplotlib.colors import LogNorm
-            # Use same scale as paper (Figure 1, cor_R10.pdf): 10^-4 to 10^0
-            if matrix_type == 'correlation':
-                vmin = 1e-4
-                vmax = 1e0
-            else:
-                # For covariance, use data-driven limits
-                vmin = np.min(matrix[matrix > 0]) if np.any(matrix > 0) else 1e-10
-                vmax = np.max(matrix)
+            vmin = np.min(matrix[matrix > 0]) if np.any(matrix > 0) else 1e-10
+            vmax = np.max(matrix)
             im = ax.imshow(matrix, cmap=cmap, norm=LogNorm(vmin=vmin, vmax=vmax))
         else:
             vmax = np.max(np.abs(matrix))
@@ -670,6 +601,7 @@ def main():
                header='Cluster number count correlation matrix (Krause & Eifler 2016 implementation)')
     
     print(f"\nResults saved to /Users/nesar/Projects/HEP/EDE/Codes/CovMat/")
+    
     print("Files created:")
     print("  - cluster_covariance_matrix.png")
     print("  - cluster_correlation_matrix.png") 
@@ -679,4 +611,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
